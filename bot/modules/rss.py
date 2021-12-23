@@ -8,6 +8,7 @@ from telegram.ext import CommandHandler
 
 from bot import dispatcher, job_queue, rss_dict, rss_dict_lock, LOGGER, DB_URI, RSS_DELAY, RSS_CHAT_ID, RSS_COMMAND
 from bot.helper.telegram_helper.message_utils import sendMessage, editMessage, sendRss
+from bot.helper.ext_utils.bot_utils import new_thread
 from bot.helper.telegram_helper.filters import CustomFilters
 from bot.helper.telegram_helper.bot_commands import BotCommands
 from bot.helper.ext_utils.db_handler import DbManger
@@ -33,8 +34,12 @@ def rss_get(update, context):
                 rss_d = feedparser.parse(feed_url[0])
                 item_info = ""
                 for item_num in range(count):
+                    try:
+                        link = rss_d.entries[item_num]['links'][1]['href']
+                    except IndexError:
+                        link = rss_d.entries[item_num]['link']
                     item_info += f"<b>Name: </b><code>{rss_d.entries[item_num]['title']}</code>\n"
-                    item_info += f"<b>Link: </b><code>{rss_d.entries[item_num]['link']}</code>\n\n"
+                    item_info += f"<b>Link: </b><code>{link}</code>\n\n"
                 editMessage(item_info, msg)
             except IndexError as e:
                 LOGGER.error(str(e))
@@ -47,6 +52,7 @@ def rss_get(update, context):
     except (IndexError, ValueError):
         sendMessage(f"Use this format to fetch:\n/{BotCommands.RssGetCommand} Title value", context.bot, update)
 
+@new_thread
 def rss_sub(update, context):
     try:
         args = update.message.text.split(" ", maxsplit=2)
@@ -62,7 +68,11 @@ def rss_sub(update, context):
             sub_msg += f"\n\n<b>Title: </b><code>{title}</code>\n<b>Feed Url: </b>{feed_link}"
             sub_msg += f"\n\n<b>latest record for </b>{rss_d.feed.title}:"
             sub_msg += f"\n\n<b>Name: </b><code>{rss_d.entries[0]['title']}</code>"
-            sub_msg += f"\n\n<b>Link: </b><code>{rss_d.entries[0]['link']}</code>"
+            try:
+                link = rss_d.entries[0]['links'][1]['href']
+            except IndexError:
+                link = rss_d.entries[0]['link']
+            sub_msg += f"\n\n<b>Link: </b><code>{link}</code>"
             DbManger().rss_add(title, feed_link, str(rss_d.entries[0]['link']), str(rss_d.entries[0]['title']))
             with rss_dict_lock:
                 if len(rss_dict) == 0:
@@ -80,6 +90,7 @@ def rss_sub(update, context):
     except IndexError:
         sendMessage(f"Use this format to add feed url:\n/{BotCommands.RssSubCommand} Title https://www.rss-url.com", context.bot, update)
 
+@new_thread
 def rss_unsub(update, context):
     try:
         args = update.message.text.split(" ")
@@ -97,6 +108,7 @@ def rss_unsub(update, context):
     except IndexError:
         sendMessage(f"Use this format to remove feed url:\n/{BotCommands.RssUnSubCommand} Title", context.bot, update)
 
+@new_thread
 def rss_unsuball(update, context):
     if len(rss_dict) > 0:
         DbManger().rss_delete_all()
@@ -116,7 +128,7 @@ def rss_monitor(context):
         for name, url_list in rss_dict.items():
             """
             try:
-                resp = requests.get(url_list[0], timeout=20)
+                resp = requests.get(url_list[0], timeout=15)
             except RequestException as e:
                 LOGGER.error(f"{e} for feed: {name} - {url_list[0]}")
                 continue
@@ -125,14 +137,19 @@ def rss_monitor(context):
             try:
                 rss_d = feedparser.parse(url_list[0])
                 if (url_list[1] != rss_d.entries[0]['link'] and url_list[2] != rss_d.entries[0]['title']):
-                    feed_last = []
                     feed_count = 0
                     while (url_list[1] != rss_d.entries[feed_count]['link'] and url_list[2] != rss_d.entries[feed_count]['title']):
-                        feed_last.append(rss_d.entries[feed_count]['link'])
-                        feed_count += 1
-                    for url in feed_last:
-                        feed_msg = f"{RSS_COMMAND} {url}" if RSS_COMMAND is not None else f"{url}"
+                        try:
+                            url = rss_d.entries[feed_count]['links'][1]['href']
+                        except IndexError:
+                            url = rss_d.entries[feed_count]['link']
+                        if RSS_COMMAND is not None:
+                            feed_msg = f"{RSS_COMMAND} {url}"
+                        else:
+                            feed_msg = f"<b>Name: </b><code>{rss_d.entries[feed_count]['title']}</code>\n\n"
+                            feed_msg += f"<b>Link: </b><code>{url}</code>"
                         sendRss(feed_msg, context.bot)
+                        feed_count += 1
                         sleep(2)
                     DbManger().rss_update(name, str(rss_d.entries[0]['link']), str(rss_d.entries[0]['title']))
                     rss_dict[name] = [url_list[0], str(rss_d.entries[0]['link']), str(rss_d.entries[0]['title'])]
